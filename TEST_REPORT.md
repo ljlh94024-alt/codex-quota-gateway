@@ -1,6 +1,18 @@
 # Test Report
 
-执行时间：2026-08-25
+执行时间：2026-08-26
+
+网络 Runtime 返工验证：
+
+- `start.sh` 首次创建的 `.env` 会保留，并设置权限 `600`：通过
+- `scripts/generate_caddy.py` 已删除：通过
+- README 外部网络检查具有 `codex-net` 默认值：通过
+- Python 编译检查：通过
+- 完整 `unittest`：23 tests passed
+- 基础 `docker compose config`：通过
+- 外部网络 override `docker compose -f docker-compose.yml -f docker-compose.upstream-network.yml config`：通过
+- `scripts/network_smoke_test.sh`：本机未执行；当前 Windows 环境没有可用的 WSL `/bin/bash`，Docker Desktop Linux daemon 也未运行
+- 本次返工未部署或重启生产服务器；服务器实际启动冒烟仍作为独立验收项
 
 本地测试：
 
@@ -10,7 +22,7 @@
 - 安全限流、Secret 阻断与审计：通过
 - 用户统计隔离、周汇总、历史上限：通过
 
-结果：14 tests passed。
+结果：23 tests passed。
 
 生产加固本地验证：
 

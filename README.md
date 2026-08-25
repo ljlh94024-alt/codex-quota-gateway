@@ -42,6 +42,7 @@ curl -sS http://127.0.0.1:8080/healthz
 跨 Compose 项目时，先确认外部网络存在，再使用可选 override：
 
 ```bash
+UPSTREAM_DOCKER_NETWORK="${UPSTREAM_DOCKER_NETWORK:-codex-net}"
 docker network inspect "$UPSTREAM_DOCKER_NETWORK"
 docker compose -f docker-compose.yml -f docker-compose.upstream-network.yml up -d --build
 ```
