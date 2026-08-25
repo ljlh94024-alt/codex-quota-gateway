@@ -1,4 +1,4 @@
-gateway.example.com {
+{$DOMAIN} {
     encode gzip
     redir / /dashboard 302
     reverse_proxy gateway:8080

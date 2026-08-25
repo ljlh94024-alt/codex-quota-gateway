@@ -23,14 +23,31 @@ Gateway 为单实例运行。启动时会把上一次进程异常结束留下的
 客户打开你的域名根路径时会自动进入临时只读数据页 `/dashboard`；API 客户端使用你的域名 `/v1` Base URL。
 
 ```bash
-UPSTREAM_BASE_URL=http://127.0.0.1:<proxy-port>/v1
+# 同一 Docker 网络中的上游服务
+UPSTREAM_BASE_URL=http://<upstream-service>:<container-port>/v1
 UPSTREAM_API_KEY=
+
+# 或宿主机已发布且 bridge 可达的端口
+# UPSTREAM_BASE_URL=http://host.docker.internal:<host-port>/v1
+
+# 或远程授权 HTTPS Proxy
+# UPSTREAM_BASE_URL=https://<authorized-upstream-host>/v1
 ```
 
-然后执行：
+Gateway 容器里的 `127.0.0.1` 只代表 Gateway 自己，不能用来访问宿主机或另一个容器。默认 Compose 自动创建 `gateway-net`，不需要预先创建 `codex-net`。然后执行：
 
 ```bash
-docker compose up -d --build
+docker compose config >/dev/null
+docker compose up -d --build gateway
+curl -fsS http://127.0.0.1:8080/healthz
+```
+
+跨 Compose 项目时，使用可选 override（只让 Gateway 加入外部上游网络，Caddy 保持在基础网络）：
+
+```bash
+UPSTREAM_DOCKER_NETWORK=codex-net docker compose \
+  -f docker-compose.yml -f docker-compose.upstream-network.yml \
+  config >/dev/null
 ```
 
 ## Model discovery and verification
@@ -151,7 +168,7 @@ export SERVER_IP='<server-ip>'
 bash deploy_public.sh
 ```
 
-脚本不会打印或写入 Git 的 Token；它会更新 DNS、等待解析、生成 `caddy/Caddyfile`、停止临时 HTTP profile，并启动 HTTPS profile。报告写入 `PUBLIC_DEPLOY_REPORT.md`。
+脚本不会打印或写入 Git 的 Token；它会更新 DNS、等待解析、把 `DOMAIN` 写入本地 `.env`、停止临时 HTTP profile，并启动 HTTPS profile。Caddyfile 使用 `{$DOMAIN}`，脚本不会改写受 Git 跟踪的 Caddyfile。报告写入 `PUBLIC_DEPLOY_REPORT.md`。
 
 ## 公网只读 Dashboard
 

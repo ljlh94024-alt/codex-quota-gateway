@@ -1,0 +1,9 @@
+services:
+  gateway:
+    networks:
+      upstream-net: {}
+
+networks:
+  upstream-net:
+    external: true
+    name: ${UPSTREAM_DOCKER_NETWORK:-codex-net}

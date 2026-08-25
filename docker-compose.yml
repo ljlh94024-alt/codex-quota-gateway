@@ -7,13 +7,16 @@ services:
     environment:
       DB_PATH: /app/data/gateway.db
       SECRETS_DIR: /app/secrets
+      BIND_HOST: 0.0.0.0
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
       - gateway-data:/app/data
       - gateway-secrets:/app/secrets
     networks:
-      - codex-net
+      - gateway-net
     init: true
     read_only: false
     security_opt:
@@ -33,6 +36,8 @@ services:
   caddy:
     image: caddy:2.9-alpine
     profiles: ["https"]
+    environment:
+      DOMAIN: ${DOMAIN:-gateway.example.com}
     restart: always
     depends_on:
       gateway:
@@ -46,7 +51,7 @@ services:
       - caddy-data:/data
       - caddy-config:/config
     networks:
-      - codex-net
+      - gateway-net
     security_opt:
       - no-new-privileges:true
     logging:
@@ -67,7 +72,7 @@ services:
     volumes:
       - ./caddy/PublicTestCaddyfile:/etc/caddy/Caddyfile:ro
     networks:
-      - codex-net
+      - gateway-net
     security_opt:
       - no-new-privileges:true
     logging:
@@ -83,5 +88,5 @@ volumes:
   caddy-config:
 
 networks:
-  codex-net:
-    external: true
+  gateway-net:
+    driver: bridge

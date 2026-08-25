@@ -1,6 +1,10 @@
 # Production Checklist
 
 - [ ] `.env` 不提交 Git；`SECRET_KEY` 使用随机值
+- [ ] Gateway 容器使用 `BIND_HOST=0.0.0.0`，宿主机仍只发布 `127.0.0.1:8080`
+- [ ] 基础 Compose 使用自动创建的 `gateway-net`；跨项目网络仅通过 `docker-compose.upstream-network.yml`
+- [ ] Caddy 通过 `gateway:8080` 反代并从 `.env` 读取 `DOMAIN`
+- [ ] 上游 URL 未使用容器内 `127.0.0.1`
 - [ ] `ADMIN_PASSWORD_HASH` 或 `/app/secrets/admin_password_hash.txt` 已配置
 - [ ] `SESSION_COOKIE_SECURE=true`
 - [ ] DNS `DOMAIN` 已指向服务器
