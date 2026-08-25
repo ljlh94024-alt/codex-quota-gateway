@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Codex Gateway 管理员登录</title>
+<style>body{font-family:system-ui;max-width:28rem;margin:6rem auto;padding:0 1rem}input{width:100%;box-sizing:border-box;padding:.7rem;margin:.5rem 0}button{padding:.6rem 1rem}#error{color:#b00;min-height:1.5rem}</style>
+<h1>管理员登录</h1>
+<p>登录会话具备过期时间，Cookie 使用 HttpOnly、SameSite=Lax 和 Secure 属性。</p>
+<form method="post" action="/admin/login">
+  <input name="password" type="password" minlength="12" autocomplete="current-password" placeholder="管理员密码" required>
+  <button type="submit">登录</button>
+</form>
+</html>

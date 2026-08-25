@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Codex Gateway 状态面板</title>
+<style>
+body{font-family:system-ui;max-width:900px;margin:2rem auto;padding:0 1rem;color:#17202a}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem}
+.card{border:1px solid #d9e1e8;border-radius:10px;padding:1rem;background:#fff}
+.online{color:#087f5b}.offline{color:#b42318}.bar{height:12px;background:#e9eef2;border-radius:8px;overflow:hidden}.fill{height:100%;background:#3b82f6}
+small{color:#667085}#error{color:#b42318}
+</style>
+<h1>Codex Gateway 状态</h1>
+<p><small>公开只读测试面板；不显示个人凭据或账户敏感信息。</small></p>
+<div class="grid"><div class="card">Gateway<br><strong id="gateway">读取中</strong></div><div class="card">Codex Proxy<br><strong id="proxy">读取中</strong></div><div class="card">最近请求<br><strong id="last">—</strong></div></div>
+<h2>Pro 唯一池 · 本周估算用量</h2><div class="card">当前池：<strong id="pool">Pro</strong>（唯一账号池）<br><strong id="used">—</strong> 已使用　<strong id="remaining">—</strong> 剩余<div class="bar"><div id="fill" class="fill" style="width:0%"></div></div><small id="basis"></small></div>
+<div class="grid"><div class="card">总额度<br><strong id="totalQuota">—</strong> tokens</div><div class="card">已用总量<br><strong id="totalUsed">—</strong> tokens</div><div class="card">本周总请求<br><strong id="totalRequests">—</strong></div></div>
+<h2>用户明细（本周）</h2><div id="users" class="grid"></div><p id="error"></p>
+<script>
+function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+async function load(){try{const r=await fetch('/api/public/dashboard',{credentials:'same-origin',cache:'no-store'});if(r.status===401){location='/dashboard';return}const d=await r.json();if(!r.ok)throw Error(d.error?.message||'读取失败');
+document.getElementById('gateway').textContent=d.gateway;document.getElementById('gateway').className=d.gateway==='ONLINE'?'online':'offline';document.getElementById('proxy').textContent=d.codex_proxy;document.getElementById('proxy').className=d.codex_proxy==='ONLINE'?'online':'offline';document.getElementById('last').textContent=d.last_request||'—';document.getElementById('pool').textContent=d.pool_name||'Pro';document.getElementById('used').textContent=d.pool_usage_percent+'%';document.getElementById('remaining').textContent=d.estimated_remaining_percent+'%';document.getElementById('fill').style.width=Math.min(100,d.pool_usage_percent)+'%';document.getElementById('totalQuota').textContent=d.estimated_total_tokens;document.getElementById('totalUsed').textContent=d.total_tokens;document.getElementById('totalRequests').textContent=d.total_requests;document.getElementById('basis').textContent='额度口径：'+d.quota_basis+'；同步时间：'+(d.last_sync_time||'—');document.getElementById('users').innerHTML=d.users.map(u=>'<div class="card"><strong>'+esc(u.name)+'</strong><br>周额度：'+u.weekly_limit_percent+'%<br>已用：'+u.tokens+' / '+u.token_limit+' tokens<br>剩余：'+u.remaining_tokens+' tokens<br>周使用率：'+u.weekly_usage_percent+'%<br>请求数：'+u.request_count+'</div>').join('');}catch(e){document.getElementById('error').textContent=e.message}}
+load();setInterval(load,30000);
+</script>
+</html>

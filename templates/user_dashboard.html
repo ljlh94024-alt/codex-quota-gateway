@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Codex Gateway 用户统计</title>
+<style>body{font-family:system-ui;max-width:980px;margin:2rem auto;padding:0 1rem}input{width:28rem;max-width:100%;padding:.5rem}button{padding:.5rem .8rem;margin:.3rem}pre{background:#f5f5f5;padding:1rem;overflow:auto}.bar{height:1rem;background:#ddd}.fill{height:100%;background:#3478db;width:0}</style>
+<h1>用户使用统计</h1>
+<p>Key 只在当前页面内存中使用，不会保存到浏览器。</p>
+<input id="key" type="password" placeholder="Bearer API Key"><button onclick="loadUsage()">刷新</button>
+<h2 id="user">未认证</h2><div class="bar"><div id="fill" class="fill"></div></div><pre id="usage"></pre>
+<h2>最近调用</h2><pre id="history"></pre>
+<script>
+async function call(path){const k=document.getElementById('key').value;const r=await fetch(path,{headers:{Authorization:'Bearer '+k}});return [r.status,await r.json()]}
+async function loadUsage(){const [s,u]=await call('/api/me/usage');if(s!==200){document.getElementById('usage').textContent=JSON.stringify(u,null,2);return}document.getElementById('user').textContent=u.user;document.getElementById('fill').style.width=Math.min(100,u.week_usage.percent)+'%';document.getElementById('usage').textContent=JSON.stringify(u,null,2);const [hs,h]=await call('/api/me/history');document.getElementById('history').textContent=JSON.stringify(hs===200?h:{status:hs,error:h},null,2)}
+</script>
+</html>

@@ -1,0 +1,20 @@
+:80 {
+    encode gzip
+
+    @dashboard path /dashboard /dashboard/access
+    @public_api path /api/public/dashboard
+    @openai_api path /v1/*
+
+    handle @dashboard {
+        reverse_proxy gateway:8080
+    }
+    handle @public_api {
+        reverse_proxy gateway:8080
+    }
+    handle @openai_api {
+        reverse_proxy gateway:8080
+    }
+    handle {
+        respond "not found" 404
+    }
+}

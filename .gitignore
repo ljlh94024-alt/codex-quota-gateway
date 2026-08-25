@@ -1,0 +1,13 @@
+.env
+data/
+secrets/
+*.db
+__pycache__/
+*.pyc
+*.log
+*.sqlite
+*.sqlite3
+backup/
+reports/
+.coverage
+.pytest_cache/
