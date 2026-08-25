@@ -12,8 +12,6 @@ command -v python3 >/dev/null
 command -v curl >/dev/null
 
 python3 scripts/setup_duckdns.py
-python3 scripts/generate_caddy.py
-
 set_env() {
     key="$1"
     value="$2"
@@ -27,6 +25,9 @@ set_env PUBLIC_TEST_MODE false
 set_env COOKIE_SECURE true
 set_env SESSION_COOKIE_SECURE true
 set_env BIND_HOST 0.0.0.0
+set_env DOMAIN "$DOMAIN"
+
+docker compose --profile https config >/dev/null
 
 docker compose --profile public-test stop public_test >/dev/null 2>&1 || true
 docker compose --profile public-test rm -f public_test >/dev/null 2>&1 || true
@@ -34,15 +35,15 @@ docker compose --profile https up -d
 
 https_code=""
 for _ in $(seq 1 30); do
-    https_code="$(curl -k -sS -o /dev/null -w '%{http_code}' --max-time 15 "https://${DOMAIN}/healthz" || true)"
+    https_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "https://${DOMAIN}/healthz" || true)"
     [ "$https_code" = "200" ] && break
     sleep 5
 done
 [ "$https_code" = "200" ]
-dashboard_code="$(curl -k -sS -o /dev/null -w '%{http_code}' --max-time 15 "https://${DOMAIN}/dashboard")"
-api_code="$(curl -k -sS -o /dev/null -w '%{http_code}' --max-time 15 "https://${DOMAIN}/v1/models")"
-admin_code="$(curl -k -sS -o /dev/null -w '%{http_code}' --max-time 15 "https://${DOMAIN}/admin/dashboard")"
-redirect_code="$(curl -k -sS -o /dev/null -w '%{http_code}' --max-time 15 "http://${DOMAIN}/dashboard" || true)"
+dashboard_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "https://${DOMAIN}/dashboard")"
+api_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "https://${DOMAIN}/v1/models")"
+admin_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "https://${DOMAIN}/admin/dashboard")"
+redirect_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "http://${DOMAIN}/dashboard" || true)"
 [ "$dashboard_code" = "200" ]
 [ "$api_code" = "401" ]
 [ "$admin_code" = "303" ] || [ "$admin_code" = "307" ]

@@ -10,4 +10,4 @@ COPY security_rules.yaml .
 COPY templates ./templates
 RUN mkdir -p /app/data /app/secrets
 EXPOSE 8080
-CMD ["sh", "-c", "exec uvicorn app.main:app --host ${BIND_HOST:-0.0.0.0} --port ${PORT:-8080}"]
+CMD ["sh", "-c", "python -m app.bootstrap && exec uvicorn app.main:app --host ${BIND_HOST:-0.0.0.0} --port ${PORT:-8080}"]

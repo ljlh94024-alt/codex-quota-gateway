@@ -27,12 +27,24 @@
 
 ```bash
 cp .env.example .env
-# 在 .env 中设置已授权的 MultiVibe/Codex Proxy URL
-docker compose up -d --build
-docker compose run --rm gateway python -m app.bootstrap
+# 在 .env 中设置已授权的上游 URL；不要使用容器内的 127.0.0.1
+docker compose config >/dev/null
+docker compose up -d --build gateway
+curl -sS http://127.0.0.1:8080/healthz
 ```
 
-初次 bootstrap 的 Key 保存在 Docker volume 的 `secrets/gateway_keys.json`，管理员 Key 在 `secrets/admin_key.txt`。这些文件不要提交 Git 或公开发布。
+镜像启动时会自动执行幂等 bootstrap。用户 Key 保存在 Docker volume 的 `/app/secrets/gateway_keys.json`，管理员 Key 在 `/app/secrets/admin_key.txt`。这些文件不要提交 Git 或公开发布。
+
+默认 Compose 会自动创建项目管理的 `gateway-net` bridge 网络，Caddy 通过 `gateway:8080` 访问 Gateway；不需要预先手工创建网络。Gateway 在容器内监听 `0.0.0.0:8080`，宿主机仍只发布 `127.0.0.1:8080`，因此 8080 不对公网开放。
+
+上游连接方式：同一 Docker 网络使用 `http://<service-name>:<container-port>/v1`；宿主机已发布且可从 bridge 访问的端口使用 `http://host.docker.internal:<host-port>/v1`；远程授权代理使用 `https://<authorized-upstream-host>/v1`。不要在容器内使用 `127.0.0.1` 连接外部上游。
+
+跨 Compose 项目时，先确认外部网络存在，再使用可选 override：
+
+```bash
+docker network inspect "$UPSTREAM_DOCKER_NETWORK"
+docker compose -f docker-compose.yml -f docker-compose.upstream-network.yml up -d --build
+```
 
 ## 安全边界
 
@@ -86,11 +98,12 @@ BACKUP_TARGET=s3://bucket/prefix
 SECRET_KEY=replace-with-32-byte-random-secret
 ADMIN_PASSWORD_HASH=
 SESSION_COOKIE_SECURE=true
-DOMAIN=gateway.example.com
+DOMAIN=
+UPSTREAM_DOCKER_NETWORK=codex-net
 PUBLIC_DASHBOARD_MODE=false
 PUBLIC_TEST_MODE=false
 PUBLIC_PORT=18080
-BIND_HOST=127.0.0.1
+BIND_HOST=0.0.0.0
 PUBLIC_DASHBOARD_PASSWORD=
 COOKIE_SECURE=true
 ```
@@ -130,13 +143,13 @@ GET /admin/dashboard
 docker compose run --rm -it gateway python set_admin_password.py
 ```
 
-启用 HTTPS 前，将 DNS 的 `DOMAIN` A/AAAA 记录指向服务器，并在 `.env` 设置域名和 `SESSION_COOKIE_SECURE=true`：
+启用 HTTPS 前，将 DNS 的 `DOMAIN` A/AAAA 记录指向服务器，并在 `.env` 设置域名、`SESSION_COOKIE_SECURE=true` 和 `COOKIE_SECURE=true`：
 
 ```bash
 docker compose --profile https up -d
 ```
 
-Caddy 会自动申请/续期证书，并将 HTTP 重定向到 HTTPS。没有真实域名和 DNS 指向时不要启用 `https` profile。
+Caddy 会直接读取 `.env` 中的 `DOMAIN`，自动申请/续期证书，并将 HTTP 重定向到 HTTPS；不会改写受 Git 跟踪的 Caddyfile。没有真实域名和 DNS 指向时不要启用 `https` profile。
 
 管理员浏览器入口为 `/admin/login`；`/admin/dashboard` 需要有效 Session。脚本恢复流程：
 
