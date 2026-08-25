@@ -1,0 +1,16 @@
+rules:
+  # Kept as a warning-only switch and disabled by default to avoid blocking
+  # normal software development, CTF, and defensive research prompts.
+  - name: suspicious_keyword
+    level: warning
+    enabled: false
+
+  # High-confidence credential patterns are blocked before upstream forwarding.
+  - name: leaked_secret
+    level: block
+    enabled: true
+
+  # Rolling usage thresholds create a review event; they do not auto-ban users.
+  - name: abnormal_usage
+    level: review
+    enabled: true

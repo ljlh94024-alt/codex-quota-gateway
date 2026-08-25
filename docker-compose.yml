@@ -1,0 +1,87 @@
+services:
+  gateway:
+    build: .
+    restart: always
+    env_file:
+      - .env
+    environment:
+      DB_PATH: /app/data/gateway.db
+      SECRETS_DIR: /app/secrets
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - gateway-data:/app/data
+      - gateway-secrets:/app/secrets
+    networks:
+      - codex-net
+    init: true
+    read_only: false
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2.9-alpine
+    profiles: ["https"]
+    restart: always
+    depends_on:
+      gateway:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - codex-net
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  public_test:
+    image: caddy:2.9-alpine
+    profiles: ["public-test"]
+    restart: always
+    depends_on:
+      gateway:
+        condition: service_healthy
+    ports:
+      - "${PUBLIC_PORT:-18080}:80"
+    volumes:
+      - ./caddy/PublicTestCaddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      - codex-net
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  gateway-data:
+  gateway-secrets:
+  caddy-data:
+  caddy-config:
+
+networks:
+  codex-net:
+    external: true

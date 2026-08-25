@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Codex Gateway 管理面板</title>
+<style>body{font-family:system-ui;max-width:1100px;margin:2rem auto;padding:0 1rem}button{padding:.5rem .8rem;margin:.3rem}pre{background:#f5f5f5;padding:1rem;overflow:auto}</style>
+<h1>Codex Gateway 管理面板</h1><button onclick="loadAll()">刷新</button><button onclick="logout()">退出</button><pre id="summary"></pre><pre id="events"></pre>
+<script>
+async function load(path){const r=await fetch(path,{credentials:'same-origin'});if(r.status===401){location='/admin/login';return [r.status,{}]}return [r.status,await r.json()]}
+async function loadAll(){const [s,u]=await load('/admin/usage');document.getElementById('summary').textContent=JSON.stringify({status:s,data:u},null,2);const [es,e]=await load('/admin/security-events?limit=50');document.getElementById('events').textContent=JSON.stringify({status:es,data:e},null,2)}
+async function logout(){await fetch('/admin/logout',{method:'POST',credentials:'same-origin'});location='/admin/login'}
+loadAll();
+</script>
+</html>
