@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 from .config import settings
@@ -48,14 +49,10 @@ async def lifespan(_: FastAPI):
     await state.db.init()
     # This gateway is intentionally single-instance. Any pending/running task
     # left in SQLite at process startup cannot still own an in-memory
-    # semaphore or reservation, so reconcile it before accepting traffic.
+    # semaphore. Reconcile each task-owned reservation before accepting traffic.
     recovered_at = iso(utc_now())
-    await state.db.execute(
-        "UPDATE tasks SET status='failed', error='gateway restarted before completion', finished_at=? WHERE status IN ('pending','running')",
-        (recovered_at,),
-    )
-    await state.db.execute("UPDATE users SET weekly_reserved=0 WHERE weekly_reserved<>0")
     state.quota = QuotaManager(state.db)
+    await state.quota.recover_inflight(recovered_at)
     state.security = SecurityGuard(state.db)
     await asyncio.to_thread(backup_database)
     backup_stop = asyncio.Event()
@@ -69,6 +66,15 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Codex Quota Gateway", version="1.0.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
+    expose_headers=["Content-Type", "X-Request-ID"],
+    max_age=600,
+)
 
 
 @app.middleware("http")
@@ -163,8 +169,39 @@ async def update_upstream_quota(headers: dict, data: Any) -> None:
         "INSERT INTO quota_state(id,total_quota,upstream_used,upstream_remaining,source,updated_at) VALUES(1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET total_quota=excluded.total_quota, upstream_used=excluded.upstream_used, upstream_remaining=excluded.upstream_remaining, source=excluded.source, updated_at=excluded.updated_at",
         (int(total), used, remaining, "upstream", iso(utc_now())),
     )
-async def record_task(task_id: str, status: str, error_text: str | None = None) -> None:
-    await state.db.execute("UPDATE tasks SET status=?, error=?, finished_at=? WHERE id=?", (status, error_text, iso(utc_now()), task_id))
+async def update_task_phase(task_id: str, phase: str, *, status: str | None = None) -> None:
+    now = iso(utc_now())
+    if status is None:
+        await state.db.execute("UPDATE tasks SET phase=?, last_activity_at=? WHERE id=?", (phase, now, task_id))
+    else:
+        started = ", started_at=COALESCE(started_at, ?)" if status == "running" else ""
+        params = (status, phase, now, now, task_id) if started else (status, phase, now, task_id)
+        await state.db.execute(f"UPDATE tasks SET status=?, phase=?, last_activity_at=?{started} WHERE id=?", params)
+
+
+async def mark_task_reserved(task_id: str, reserved_tokens: int) -> None:
+    await state.db.execute(
+        "UPDATE tasks SET reserved_tokens=?, quota_state='reserved', last_activity_at=? WHERE id=?",
+        (max(0, int(reserved_tokens)), iso(utc_now()), task_id),
+    )
+
+
+async def record_task(task_id: str, status: str, error_text: str | None = None, *, phase: str | None = None) -> None:
+    final_phase = phase or {"success": "completed", "cancelled": "cancelled"}.get(status, status)
+    await state.db.execute("UPDATE tasks SET status=?, phase=?, error=?, finished_at=?, last_activity_at=? WHERE id=?", (status, final_phase, error_text, iso(utc_now()), iso(utc_now()), task_id))
+
+
+async def shielded(coro) -> None:
+    """Run best-effort async cleanup even while the request is cancelling."""
+    task = asyncio.create_task(coro)
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # The inner task remains protected and will finish independently.
+        task.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
+    except Exception:
+        if not task.done():
+            task.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
 
 
 async def record_usage(
@@ -180,11 +217,12 @@ async def record_usage(
 ) -> None:
     response_time = iso(utc_now())
     request_time = request_time or response_time
-    await state.db.execute(
-        "INSERT INTO usage_logs(user_id,request_id,model,input_tokens,output_tokens,total_tokens,duration_ms,request_time,response_time,status,error_type,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+    inserted = await state.db.execute(
+        "INSERT OR IGNORE INTO usage_logs(user_id,request_id,model,input_tokens,output_tokens,total_tokens,duration_ms,request_time,response_time,status,error_type,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
         (user_id, request_id, model, inp, out, inp + out, duration_ms, request_time, response_time, status, error_type, response_time),
     )
-    await update_weekly_usage(state.db, user_id, inp + out, request_time)
+    if inserted == 1:
+        await update_weekly_usage(state.db, user_id, inp + out, request_time)
 
 
 async def nonstream_upstream(endpoint: str, payload: dict) -> tuple[int, dict, Any, str]:
@@ -322,83 +360,225 @@ async def handle_proxy(request: Request, endpoint: str, authorization: str | Non
     task_id = request_id
     model = payload.get("model") if isinstance(payload, dict) else None
     now = iso(utc_now())
-    await state.db.execute("INSERT INTO tasks(id,user_id,status,endpoint,model,request_id,created_at) VALUES(?,?,?,?,?,?,?)", (task_id, user["id"], "pending", endpoint, model, request_id, now))
+    await state.db.execute("INSERT INTO tasks(id,user_id,status,endpoint,model,request_id,phase,last_activity_at,created_at) VALUES(?,?,?,?,?,?,?,?,?)", (task_id, user["id"], "pending", endpoint, model, request_id, "pending", now, now))
     estimate = estimate_tokens(payload)
     ok, quota_info = await state.quota.reserve(user["id"], estimate)
     if not ok:
-        await record_task(task_id, "cancelled", "weekly quota exceeded")
+        await state.db.execute(
+            "UPDATE tasks SET status='cancelled',phase='cancelled',error=?,finished_at=?,last_activity_at=?,quota_state='released',quota_finalized_at=? WHERE id=?",
+            ("weekly quota exceeded", iso(utc_now()), iso(utc_now()), iso(utc_now()), task_id),
+        )
         return error("weekly quota exceeded", 429, "weekly_quota_exceeded")
     reserved_estimate = int(quota_info.get("reserved", estimate))
-    await state.db.execute("UPDATE tasks SET status='running', started_at=? WHERE id=?", (iso(utc_now()), task_id))
+    await mark_task_reserved(task_id, reserved_estimate)
     user_sem = state.user_sems[user["id"]]
     started = time.monotonic()
-    if payload.get("stream"):
-        # Keep both slots occupied until the SSE generator closes, not just until
-        # the response headers have been returned.
-        await user_sem.acquire()
-        await state.global_sem.acquire()
-        client, upstream_response, early = await open_stream(endpoint, payload)
-        if early is not None:
-            state.global_sem.release()
-            user_sem.release()
-            await state.quota.settle(user["id"], reserved_estimate, estimate)
-            await record_task(task_id, "failed", early.body.decode("utf-8", "ignore")[:500])
-            await record_usage(user["id"], request_id, model, estimate, 0, int((time.monotonic() - started) * 1000), "failed", now, "upstream_error")
-            if state.security is not None:
-                await state.security.observe_usage(user["id"], ip)
-            return early
+    acquired_user = False
+    acquired_global = False
+    handed_off = False
+    upstream_started = False
+    cleanup_done = False
+    upstream_client = None
+    upstream_response = None
 
-        async def generate():
-            inp = out = 0
-            status = "success"
-            try:
-                async for chunk in upstream_response.aiter_bytes():
-                    for line in chunk.splitlines():
-                        if line.startswith(b"data:"):
+    def release_slots() -> None:
+        nonlocal acquired_user, acquired_global
+        # This is deliberately synchronous and first in cleanup. It must not
+        # be skipped by a cancelled/failed database await.
+        if acquired_global:
+            state.global_sem.release()
+            acquired_global = False
+        if acquired_user:
+            user_sem.release()
+            acquired_user = False
+
+    async def finalize(status: str, error_text: str | None, inp: int, out: int, *, charge: bool, error_type: str | None = None) -> None:
+        nonlocal cleanup_done
+        if cleanup_done:
+            return
+        cleanup_done = True
+        release_slots()
+        if upstream_response is not None:
+            await shielded(upstream_response.aclose())
+        if upstream_client is not None:
+            await shielded(upstream_client.aclose())
+        await shielded(
+            state.quota.finalize_task(
+                task_id,
+                status=status,
+                error_text=error_text,
+                input_tokens=inp,
+                output_tokens=out,
+                duration_ms=int((time.monotonic() - started) * 1000),
+                request_time=now,
+                model=model,
+                request_id=request_id,
+                error_type=error_type,
+                charge=charge,
+            )
+        )
+        if state.security is not None:
+            await shielded(state.security.observe_usage(user["id"], ip))
+
+    try:
+        await update_task_phase(task_id, "waiting_user_slot")
+        try:
+            await asyncio.wait_for(user_sem.acquire(), timeout=settings.queue_timeout_seconds)
+        except asyncio.TimeoutError:
+            await finalize("timed_out", "queue timeout while waiting for user slot", 0, 0, charge=False, error_type="queue_timeout")
+            return error("request queue timeout", 429, "queue_timeout")
+        acquired_user = True
+
+        await update_task_phase(task_id, "waiting_global_slot")
+        try:
+            await asyncio.wait_for(state.global_sem.acquire(), timeout=settings.queue_timeout_seconds)
+        except asyncio.TimeoutError:
+            await finalize("timed_out", "queue timeout while waiting for global slot", 0, 0, charge=False, error_type="queue_timeout")
+            return error("request queue timeout", 429, "queue_timeout")
+        acquired_global = True
+        await update_task_phase(task_id, "opening_upstream", status="running")
+
+        if payload.get("stream"):
+            # open_stream has sent the request once it begins; settle the
+            # reservation conservatively if the upstream never returns headers.
+            upstream_started = True
+            upstream_client, upstream_response, early = await open_stream(endpoint, payload)
+            if early is not None:
+                await finalize("failed", early.body.decode("utf-8", "ignore")[:500], 0, 0, charge=True, error_type="upstream_error")
+                return early
+            await update_task_phase(task_id, "waiting_first_event")
+
+            async def generate():
+                inp = out = 0
+                status = "success"
+                error_text = None
+                error_type = None
+                seen_event = False
+                iterator = upstream_response.aiter_bytes().__aiter__()
+                stream_deadline = time.monotonic() + settings.stream_max_seconds
+                sse_buffer = b""
+                try:
+                    while True:
+                        if await request.is_disconnected():
+                            status = "cancelled"
+                            error_text = "client disconnected"
+                            error_type = "client_disconnected"
+                            break
+                        if time.monotonic() >= stream_deadline:
+                            status = "timed_out"
+                            error_text = "upstream stream maximum duration exceeded"
+                            error_type = "upstream_stream_timeout"
+                            timeout_event = {"error": {"message": error_text, "type": "gateway_error", "code": error_type}}
+                            if endpoint != "chat/completions":
+                                timeout_event = {"type": "error", **timeout_event}
+                            yield f"data: {json.dumps(timeout_event)}\n\ndata: [DONE]\n\n".encode()
+                            break
+                        try:
+                            chunk = await asyncio.wait_for(iterator.__anext__(), timeout=settings.stream_idle_timeout)
+                        except StopAsyncIteration:
+                            break
+                        except asyncio.TimeoutError:
+                            status = "timed_out"
+                            error_text = "upstream stream idle timeout"
+                            error_type = "upstream_stream_timeout"
+                            timeout_event = {"error": {"message": error_text, "type": "gateway_error", "code": error_type}}
+                            if endpoint != "chat/completions":
+                                timeout_event = {"type": "error", **timeout_event}
+                            yield f"data: {json.dumps(timeout_event)}\n\ndata: [DONE]\n\n".encode()
+                            break
+
+                        sse_buffer += chunk
+                        complete_event = False
+                        lines = sse_buffer.split(b"\n")
+                        sse_buffer = lines.pop()
+                        for line in lines:
+                            line = line.rstrip(b"\r")
+                            if not line.startswith(b"data:"):
+                                continue
+                            data_bytes = line[5:].strip()
+                            if not data_bytes:
+                                continue
+                            seen_event = True
+                            if data_bytes == b"[DONE]":
+                                complete_event = True
+                                continue
                             try:
-                                data = json.loads(line[5:].strip())
+                                data = json.loads(data_bytes)
                                 a, b = parse_usage(data)
                                 inp, out = max(inp, a), max(out, b)
+                                event_type = str(data.get("type", "")) if isinstance(data, dict) else ""
+                                if event_type in {"response.completed", "response.failed", "response.incomplete"}:
+                                    complete_event = True
                             except (ValueError, json.JSONDecodeError):
                                 pass
-                    yield chunk
-            except Exception:
-                status = "failed"
-                raise
-            finally:
-                await upstream_response.aclose()
-                await client.aclose()
-                total = inp + out or estimate
-                await state.quota.settle(user["id"], reserved_estimate, total)
-                await record_task(task_id, status)
-                await record_usage(user["id"], request_id, model, inp, out, int((time.monotonic() - started) * 1000), status, now, None if status == "success" else "stream_error")
-                if state.security is not None:
-                    await state.security.observe_usage(user["id"], ip)
-                state.global_sem.release()
-                user_sem.release()
+                        if seen_event:
+                            await update_task_phase(task_id, "streaming")
+                        yield chunk
+                        if complete_event:
+                            break
+                except asyncio.CancelledError:
+                    status = "cancelled"
+                    error_text = "client disconnected"
+                    error_type = "client_disconnected"
+                    raise
+                except Exception as exc:
+                    status = "failed"
+                    error_text = str(exc)[:500]
+                    error_type = "stream_error"
+                    raise
+                finally:
+                    await finalize(status, error_text, inp, out, charge=True, error_type=error_type)
 
-        await update_upstream_quota(dict(upstream_response.headers), {})
-        return StreamingResponse(generate(), media_type="text/event-stream", headers={"x-request-id": request_id, "cache-control": "no-cache"})
-    async with user_sem:
-        async with state.global_sem:
-            status_code, headers, data, status = await nonstream_upstream(endpoint, payload)
-            await update_upstream_quota(headers, data)
-            inp, out = parse_usage(data)
-            total = inp + out or estimate
-            await state.quota.settle(user["id"], reserved_estimate, total)
-            await record_task(task_id, "success" if status == "success" else "failed", None if status == "success" else status)
-            error_type = None
-            if status != "success" and isinstance(data, dict):
-                error_type = str((data.get("error") or {}).get("code") or "upstream_error")
-            await record_usage(user["id"], request_id, model, inp, out, int((time.monotonic() - started) * 1000), status, now, error_type)
-            if state.security is not None:
-                await state.security.observe_usage(user["id"], ip)
-            return JSONResponse(data, status_code=status_code, headers={"x-request-id": request_id})
+            await update_upstream_quota(dict(upstream_response.headers), {})
+            handed_off = True
+            return StreamingResponse(generate(), media_type="text/event-stream", headers={"x-request-id": request_id, "cache-control": "no-cache"})
+
+        upstream_started = True
+        status_code, headers, data, status = await nonstream_upstream(endpoint, payload)
+        await update_upstream_quota(headers, data)
+        inp, out = parse_usage(data)
+        error_type = None
+        if status != "success" and isinstance(data, dict):
+            error_type = str((data.get("error") or {}).get("code") or "upstream_error")
+        await finalize("success" if status == "success" else "failed", None if status == "success" else status, inp, out, charge=True, error_type=error_type)
+        return JSONResponse(data, status_code=status_code, headers={"x-request-id": request_id})
+    except asyncio.CancelledError:
+        await finalize("cancelled", "client disconnected", 0, 0, charge=upstream_started, error_type="client_disconnected")
+        raise
+    except Exception as exc:
+        await finalize("failed", str(exc)[:500], 0, 0, charge=upstream_started, error_type="gateway_error")
+        return error("gateway request failed", 502, "gateway_error")
+    finally:
+        if not handed_off:
+            release_slots()
 
 
 @app.get("/healthz")
 async def healthz():
-    return {"status": "ok", "upstream_configured": bool(settings.upstream_base_url), "global_concurrency": settings.global_concurrency}
+    try:
+        active = max(0, settings.global_concurrency - state.global_sem._value)
+        rows = await state.db.fetchall(
+            "SELECT user_id,status,phase,created_at,last_activity_at FROM tasks WHERE status IN ('pending','running')"
+        )
+        users: dict[str, dict[str, int]] = {}
+        for row in rows:
+            key = str(row["user_id"])
+            bucket = users.setdefault(key, {"active": 0, "waiting": 0})
+            if row["status"] == "running":
+                bucket["active"] += 1
+            else:
+                bucket["waiting"] += 1
+        oldest = min((str(row["last_activity_at"] or row["created_at"]) for row in rows), default=None)
+        concurrency = {
+            "global": {"active": active, "available": max(0, state.global_sem._value), "limit": settings.global_concurrency},
+            "users": users,
+            "pending": sum(1 for row in rows if row["status"] == "pending"),
+            "running": sum(1 for row in rows if row["status"] == "running"),
+            "oldest_activity_at": oldest,
+        }
+    except Exception:
+        concurrency = {"global": {"active": None, "available": None, "limit": settings.global_concurrency}, "users": {}, "pending": None, "running": None, "oldest_activity_at": None}
+    return {"status": "ok", "upstream_configured": bool(settings.upstream_base_url), "global_concurrency": settings.global_concurrency, "concurrency": concurrency}
 
 
 @app.get("/status")

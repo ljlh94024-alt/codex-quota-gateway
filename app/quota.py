@@ -8,9 +8,11 @@ import json
 import math
 from typing import Any
 
+import aiosqlite
+
 from .config import settings
 from .db import Database
-from .usage import ensure_user_quota, get_quota_limit
+from .usage import ensure_user_quota, get_quota_limit, week_bounds
 
 
 def utc_now() -> dt.datetime:
@@ -88,6 +90,176 @@ class QuotaManager:
                 "UPDATE users SET weekly_reserved=MAX(0, weekly_reserved-?), weekly_used=weekly_used+? WHERE id=?",
                 (reserved, charged, user_id),
             )
+
+    async def release_reservation(self, user_id: int, reserved: int) -> None:
+        """Release an admission reservation without charging weekly usage."""
+        if reserved <= 0:
+            return
+        async with self.lock:
+            await self.db.execute(
+                "UPDATE users SET weekly_reserved=MAX(0, weekly_reserved-?) WHERE id=?",
+                (int(reserved), user_id),
+            )
+
+    async def finalize_task(
+        self,
+        task_id: str,
+        *,
+        status: str,
+        error_text: str | None,
+        input_tokens: int,
+        output_tokens: int,
+        duration_ms: int,
+        request_time: str,
+        model: str | None,
+        request_id: str,
+        error_type: str | None,
+        charge: bool,
+    ) -> bool:
+        """Finalize one admitted task exactly once.
+
+        Reservation ownership lives on the task row.  The state transition,
+        user quota update, usage log and weekly rollup are committed in one
+        SQLite transaction, so a duplicate cancellation/finally path cannot
+        release another task's reservation or double-count usage.
+        """
+        now = iso(utc_now())
+        observed_input = max(0, int(input_tokens or 0))
+        observed_output = max(0, int(output_tokens or 0))
+        observed_total = observed_input + observed_output
+        final_phase = "completed" if status == "success" else status
+        async with self.lock:
+            async with aiosqlite.connect(self.db.path) as db:
+                db.row_factory = aiosqlite.Row
+                await db.execute("BEGIN IMMEDIATE")
+                task = await (
+                    await db.execute(
+                        "SELECT user_id,reserved_tokens,quota_state FROM tasks WHERE id=?",
+                        (task_id,),
+                    )
+                ).fetchone()
+                if not task or str(task["quota_state"] or "none") != "reserved":
+                    await db.rollback()
+                    return False
+
+                user_id = int(task["user_id"])
+                reserved = max(0, int(task["reserved_tokens"] or 0))
+                charged = max(1, observed_total or reserved) if charge else 0
+                new_quota_state = "settled" if charge else "released"
+
+                await db.execute(
+                    "UPDATE users SET weekly_reserved=MAX(0,weekly_reserved-?), weekly_used=weekly_used+? WHERE id=?",
+                    (reserved, charged, user_id),
+                )
+                await db.execute(
+                    """UPDATE tasks
+                       SET status=?, phase=?, error=?, actual_tokens=?,
+                           quota_state=?, quota_finalized_at=?, finished_at=?,
+                           last_activity_at=?
+                       WHERE id=? AND quota_state='reserved'""",
+                    (status, final_phase, error_text, charged, new_quota_state, now, now, now, task_id),
+                )
+                usage_cursor = await db.execute(
+                    """INSERT OR IGNORE INTO usage_logs(
+                           user_id,request_id,model,input_tokens,output_tokens,
+                           total_tokens,duration_ms,request_time,response_time,
+                           status,error_type,created_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        user_id,
+                        request_id,
+                        model,
+                        observed_input,
+                        observed_output,
+                        observed_total,
+                        max(0, int(duration_ms)),
+                        request_time,
+                        now,
+                        status,
+                        error_type,
+                        now,
+                    ),
+                )
+
+                # Keep dashboard request counts and token observations in sync
+                # with the usage log; the INSERT is request-id unique.
+                if usage_cursor.rowcount == 1:
+                    start, end = week_bounds()
+                    week_start, week_end = iso(start), iso(end)
+                    await db.execute(
+                        """INSERT INTO weekly_usage(
+                               user_id,week_start,week_end,total_tokens,
+                               request_count,estimated_usage_percent)
+                           VALUES(?,?,?,?,1,0)
+                           ON CONFLICT(user_id,week_start) DO UPDATE SET
+                             total_tokens=weekly_usage.total_tokens+excluded.total_tokens,
+                             request_count=weekly_usage.request_count+1""",
+                        (user_id, week_start, week_end, observed_total),
+                    )
+                    usage_row = await (
+                        await db.execute(
+                            "SELECT total_tokens FROM weekly_usage WHERE user_id=? AND week_start=?",
+                            (user_id, week_start),
+                        )
+                    ).fetchone()
+                    quota_row = await (
+                        await db.execute(
+                            "SELECT total_quota FROM quota_state WHERE id=1"
+                        )
+                    ).fetchone()
+                    user_quota = await (
+                        await db.execute(
+                            "SELECT weekly_limit FROM user_quota WHERE user_id=?",
+                            (user_id,),
+                        )
+                    ).fetchone()
+                    total_quota = int(quota_row["total_quota"]) if quota_row else settings.default_total_quota
+                    limit_percent = float(user_quota["weekly_limit"]) if user_quota else 25.0
+                    token_limit = max(1, math.floor(total_quota * limit_percent / 100))
+                    percent = min(100.0, int(usage_row["total_tokens"]) / token_limit * 100) if usage_row else 0.0
+                    await db.execute(
+                        "UPDATE weekly_usage SET estimated_usage_percent=? WHERE user_id=? AND week_start=?",
+                        (percent, user_id, week_start),
+                    )
+                await db.commit()
+                return True
+
+    async def recover_inflight(self, recovered_at: str) -> int:
+        """Release reservations for tasks interrupted by a process restart."""
+        async with self.lock:
+            async with aiosqlite.connect(self.db.path) as db:
+                db.row_factory = aiosqlite.Row
+                await db.execute("BEGIN IMMEDIATE")
+                rows = await (
+                    await db.execute(
+                        """SELECT id,user_id,reserved_tokens,quota_state
+                           FROM tasks WHERE status IN ('pending','running')"""
+                    )
+                ).fetchall()
+                recovered = 0
+                for row in rows:
+                    reserved = max(0, int(row["reserved_tokens"] or 0))
+                    if str(row["quota_state"] or "none") == "reserved" and reserved:
+                        await db.execute(
+                            "UPDATE users SET weekly_reserved=MAX(0,weekly_reserved-?) WHERE id=?",
+                            (reserved, int(row["user_id"])),
+                        )
+                    await db.execute(
+                        """UPDATE tasks SET status='failed',phase='failed',
+                           error='gateway restarted before completion',
+                           actual_tokens=0,quota_state=CASE WHEN quota_state='reserved' THEN 'released' ELSE quota_state END,
+                           quota_finalized_at=?,finished_at=?,last_activity_at=?
+                           WHERE id=?""",
+                        (recovered_at, recovered_at, recovered_at, row["id"]),
+                    )
+                    recovered += 1
+                # A legacy task created before reservation ownership was added
+                # cannot be mapped to a reservation. It is safe to clear any
+                # remaining aggregate only during startup, before traffic is
+                # accepted, after all active task rows were reconciled.
+                await db.execute("UPDATE users SET weekly_reserved=0 WHERE weekly_reserved<>0")
+                await db.commit()
+                return recovered
 
     async def summary(self, user) -> dict:
         state = await self.db.fetchone("SELECT * FROM quota_state WHERE id=1")

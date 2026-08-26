@@ -32,13 +32,19 @@ fi
 if [[ ! -f .env ]]; then
     cp .env.example .env
 fi
+
+# Prepare only the safe baseline first.  Formal public-deployment fields are
+# deliberately written after DuckDNS has updated and confirmed the domain;
+# a failed DNS operation must not leave a partially activated deployment.
+"$python_bin" scripts/prepare_runtime_env.py --env-file .env
+
+"$python_bin" scripts/setup_duckdns.py
+
 "$python_bin" scripts/prepare_runtime_env.py --env-file .env \
     --set PUBLIC_TEST_MODE=false \
     --set COOKIE_SECURE=true \
     --set SESSION_COOKIE_SECURE=true \
     --set DOMAIN="$DOMAIN"
-
-"$python_bin" scripts/setup_duckdns.py
 
 docker compose --profile https config >/dev/null
 docker compose --profile https run --rm --no-deps \

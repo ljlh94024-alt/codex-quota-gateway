@@ -4,11 +4,11 @@
 
 ## CODEX TASK 002 本地验收
 
-- 基线：已审查基线 `863a960` 之后的本地后续提交；未修改网关业务核心文件。
+- 基线：已审查基线 `863a960` 之后的本地后续提交；本轮补充了任务生命周期与额度结算保护，未改变认证、路由和配额比例策略。
 - `git diff --check`：通过。
 - `bash -n start.sh`、`deploy_public.sh`、`scripts/network_smoke_test.sh`、`scripts/deployment_config_smoke_test.sh`：通过。
 - `python -m compileall -q app scripts`：通过。
-- `python -m unittest discover -s tests -v`：37 tests passed。
+- `python -m unittest discover -s tests -v`：42 tests passed。
 - 基础 `docker compose config`：通过。
 - `DOMAIN=example.invalid docker compose --profile https config`：通过。
 - 真实 Caddy 容器 `validate --config /etc/caddy/Caddyfile --adapter caddyfile`：通过。
@@ -19,6 +19,9 @@
 - 部署报告边界检查：通过，运行脚本包含 `--build`，不覆盖根目录报告，报告路径为被忽略的 `reports/`。
 - 临时入口清理：脚本仅在 Compose 实际列出 `public_test` 时执行 stop/rm；清理命令失败会立即终止，清理后仍运行则明确失败。
 - Compose 状态查询失败关闭：首次查询失败或清理后复查失败均返回非零；行为测试确认不会执行正式 `up --build`、不会输出成功标记、不会生成部署报告。
+- DuckDNS 执行顺序：先完成基础 `.env` 准备，再更新并确认 DNS，最后写入 `DOMAIN`、`PUBLIC_TEST_MODE` 和安全 Cookie 字段；DNS 失败时不会写入正式公网字段。
+- 任务生命周期：任务保存 `reserved_tokens`、`quota_state`、`actual_tokens` 和 `quota_finalized_at`；结算、usage log、周统计在单事务中恰好执行一次，重启恢复按任务释放 reservation。
+- 流式保护：空闲超时和总时长超时进入 `timed_out` 终态；客户端取消显式处理 `CancelledError`，响应、HTTP 客户端和并发槽均在清理路径关闭/释放。
 - 部署安全细节：脚本开头 `umask 077`；本机健康检查使用 `mktemp`，不再使用可预测的 `/tmp` 文件名。
 - 敏感信息检查：通过；公开文件未发现真实 DuckDNS Token、API Key、OAuth、Cookie、凭据或服务器地址。
 

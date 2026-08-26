@@ -23,7 +23,7 @@ def _bash_command():
     return shutil.which("bash")
 
 
-def _run_deploy_with_mocked_docker(docker_logic: str):
+def _run_deploy_with_mocked_docker(docker_logic: str, python_logic: str | None = None):
     bash = _bash_command()
     if not bash:
         raise unittest.SkipTest("bash is unavailable")
@@ -37,6 +37,7 @@ def _run_deploy_with_mocked_docker(docker_logic: str):
         shutil.copy2(ROOT / "caddy" / "Caddyfile", root / "caddy" / "Caddyfile")
         (root / ".env.example").write_text("SECRET_KEY=placeholder\n", encoding="utf-8")
         docker_log = root / "docker.log"
+        python_log = root / "python.log"
         (bin_dir / "docker").write_text(
             "#!/bin/sh\n"
             f"printf '%s\\n' \"$*\" >> '{docker_log.as_posix()}'\n"
@@ -44,8 +45,9 @@ def _run_deploy_with_mocked_docker(docker_logic: str):
             + "\nexit 0\n",
             encoding="utf-8",
         )
+        python_logic = python_logic or "#!/bin/sh\nexit 0\n"
         for name in ("python3", "python"):
-            (bin_dir / name).write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            (bin_dir / name).write_text(python_logic, encoding="utf-8")
         (bin_dir / "curl").write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
         for executable in bin_dir.iterdir():
             executable.chmod(0o755)
@@ -58,6 +60,7 @@ def _run_deploy_with_mocked_docker(docker_logic: str):
                 "SERVER_IP": "redacted",
                 "PYTHON_BIN": "python3",
                 "PYTHON_FALLBACK": "python",
+                "ORDER_LOG": str(python_log),
             }
         )
         before_reports = set((root / "reports").iterdir())
@@ -71,7 +74,10 @@ def _run_deploy_with_mocked_docker(docker_logic: str):
             errors="replace",
         )
         after_reports = set((root / "reports").iterdir())
-        return result, docker_log.read_text(encoding="utf-8"), before_reports == after_reports
+        docker_output = docker_log.read_text(encoding="utf-8")
+        if python_log.exists():
+            docker_output += "\n" + python_log.read_text(encoding="utf-8")
+        return result, docker_output, before_reports == after_reports
 
 
 class DeploySafetyTests(unittest.TestCase):
@@ -89,6 +95,32 @@ class DeploySafetyTests(unittest.TestCase):
         self.assertIn("health_file=\"$(mktemp)\"", script)
         self.assertIn("public_test is still running", script)
         self.assertNotIn("stop public_test >/dev/null 2>&1 || true", script)
+
+    def test_duckdns_succeeds_before_formal_public_env_fields_are_written(self):
+        script = (ROOT / "deploy_public.sh").read_text(encoding="utf-8")
+        dns_index = script.index('"$python_bin" scripts/setup_duckdns.py')
+        formal_index = script.index("--set PUBLIC_TEST_MODE=false")
+        self.assertLess(dns_index, formal_index)
+
+    def test_failed_duckdns_does_not_write_formal_public_env_fields(self):
+        python_logic = (
+            "#!/bin/sh\n"
+            "case \"$*\" in\n"
+            "  *'setup_duckdns.py'*) cat .env > \"$ORDER_LOG\"; exit 23 ;;\n"
+            "esac\n"
+            "exit 0\n"
+        )
+        result, docker_log, reports_unchanged = _run_deploy_with_mocked_docker(
+            "", python_logic=python_logic
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("PUBLIC_DEPLOYMENT_OK", result.stdout)
+        self.assertNotIn("up -d --build gateway caddy", docker_log)
+        self.assertTrue(reports_unchanged)
+        self.assertNotIn("PUBLIC_TEST_MODE=false", docker_log)
+        self.assertNotIn("COOKIE_SECURE=true", docker_log)
+        self.assertNotIn("SESSION_COOKIE_SECURE=true", docker_log)
+        self.assertNotIn("DOMAIN=example.duckdns.org", docker_log)
 
     def test_config_smoke_is_self_contained(self):
         script = (ROOT / "scripts" / "deployment_config_smoke_test.sh").read_text(encoding="utf-8")

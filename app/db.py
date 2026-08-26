@@ -27,6 +27,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     model TEXT,
     request_id TEXT NOT NULL,
     error TEXT,
+    phase TEXT NOT NULL DEFAULT 'pending',
+    last_activity_at TEXT,
+    reserved_tokens INTEGER NOT NULL DEFAULT 0,
+    quota_state TEXT NOT NULL DEFAULT 'none',
+    actual_tokens INTEGER NOT NULL DEFAULT 0,
+    quota_finalized_at TEXT,
     created_at TEXT NOT NULL,
     started_at TEXT,
     finished_at TEXT,
@@ -48,9 +54,11 @@ CREATE TABLE IF NOT EXISTS usage_logs (
     status TEXT NOT NULL,
     error_type TEXT,
     created_at TEXT NOT NULL,
-    FOREIGN KEY(user_id) REFERENCES users(id)
+    FOREIGN KEY(user_id) REFERENCES users(id),
+    UNIQUE(request_id)
 );
 CREATE INDEX IF NOT EXISTS idx_usage_user_created ON usage_logs(user_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_request_id_unique ON usage_logs(request_id);
 CREATE TABLE IF NOT EXISTS weekly_usage (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -125,6 +133,19 @@ class Database:
             columns = {row[1] for row in await db.execute_fetchall("PRAGMA table_info(users)")}
             if "status" not in columns:
                 await db.execute("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+            task_columns = {row[1] for row in await db.execute_fetchall("PRAGMA table_info(tasks)")}
+            if "phase" not in task_columns:
+                await db.execute("ALTER TABLE tasks ADD COLUMN phase TEXT NOT NULL DEFAULT 'pending'")
+            if "last_activity_at" not in task_columns:
+                await db.execute("ALTER TABLE tasks ADD COLUMN last_activity_at TEXT")
+            for column, definition in {
+                "reserved_tokens": "INTEGER NOT NULL DEFAULT 0",
+                "quota_state": "TEXT NOT NULL DEFAULT 'none'",
+                "actual_tokens": "INTEGER NOT NULL DEFAULT 0",
+                "quota_finalized_at": "TEXT",
+            }.items():
+                if column not in task_columns:
+                    await db.execute(f"ALTER TABLE tasks ADD COLUMN {column} {definition}")
             usage_columns = {row[1] for row in await db.execute_fetchall("PRAGMA table_info(usage_logs)")}
             for column, definition in {
                 "request_time": "TEXT",
