@@ -39,11 +39,18 @@
 - 正式 Caddy 端口配置：仅 80/443。
 - Gateway 本次本地 health：HTTP 200；`upstream_configured=false`，因为本次未配置真实上游。
 
+## 香港服务器滚动验收
+
+- 已先备份远程 `app/main.py`、`app/quota.py`、`app/db.py`，随后仅重建 `gateway`，未重启 Caddy、MultiVibe 或出口隧道。
+- 容器内确认 `STREAM_MAX_SECONDS=180`，任务表已迁移 `reserved_tokens`、`quota_state`、`actual_tokens`、`quota_finalized_at` 字段。
+- 远程 Gateway `/healthz` HTTP 200；Caddy 回环 HTTPS `/healthz` HTTP 200；caddy running、gateway healthy；并发快照为 active=0、available=6、pending=0、running=0。
+- 一次短 Responses 冒烟请求到达 Gateway，但真实上游返回 403 `upstream_auth_failed`；任务已进入 `failed/failed/settled`，reservation 归零，说明失败结算路径实际运行。该上游认证问题不属于本轮生命周期改动。
+
 ## 未执行项目
 
 - 真实 DuckDNS API 更新。
 - 真实域名证书签发和公网 HTTPS 端到端验收。
-- 真实生产服务器部署、重启或数据卷操作。
+- 真实 DuckDNS API 更新、生产 HTTPS 外部网络端到端仍未在本机执行；香港 Gateway 已完成一次滚动重建与本机/Caddy回环验收。
 - 真实 Codex 上游模型调用。
 
 ## 说明
