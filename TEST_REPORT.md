@@ -8,12 +8,13 @@
 - `git diff --check`：通过。
 - `bash -n start.sh`、`deploy_public.sh`、`scripts/network_smoke_test.sh`、`scripts/deployment_config_smoke_test.sh`：通过。
 - `python -m compileall -q app scripts`：通过。
-- `python -m unittest discover -s tests -v`：32 tests passed。
+- `python -m unittest discover -s tests -v`：35 tests passed。
 - 基础 `docker compose config`：通过。
 - `DOMAIN=example.invalid docker compose --profile https config`：通过。
 - 真实 Caddy 容器 `validate --config /etc/caddy/Caddyfile --adapter caddyfile`：通过。
 - `scripts/network_smoke_test.sh`：通过，输出 `NETWORK_SMOKE_OK`。
 - `scripts/deployment_config_smoke_test.sh`：通过，输出 `DEPLOYMENT_CONFIG_SMOKE_OK`；未绑定宿主机 80/443，未启动正式 Caddy daemon。
+- 配置冒烟干净环境：脚本在没有 `.env` 的独立工作树中自动创建临时 `.env`，校验后自动清理：通过。
 - 端口边界断言：通过，输出 `PORT_BOUNDARY_OK`。
 - 部署报告边界检查：通过，运行脚本包含 `--build`，不覆盖根目录报告，报告路径为被忽略的 `reports/`。
 - 敏感信息检查：通过；公开文件未发现真实 DuckDNS Token、API Key、OAuth、Cookie、凭据或服务器地址。

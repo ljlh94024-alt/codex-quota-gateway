@@ -168,7 +168,7 @@ export SERVER_IP='<server-ip>'
 bash deploy_public.sh
 ```
 
-脚本不会打印或写入 Git 的 Token；它会更新 DNS、等待解析、把 `DOMAIN` 写入本地 `.env`、停止临时 HTTP profile，校验 Compose 与真实 Caddyfile，先验收本机 `/healthz`，再以 `--build` 启动 HTTPS profile。Caddyfile 使用 `{$DOMAIN}`，脚本不会改写受 Git 跟踪的 Caddyfile。运行报告写入权限受限且被忽略的 `reports/public-deploy-*.md`；根目录 `PUBLIC_DEPLOY_REPORT.md` 仅为脱敏模板。本任务不执行真实生产服务器部署。
+脚本不会打印或写入 Git 的 Token；它会更新 DNS、等待解析、把 `DOMAIN` 写入本地 `.env`，校验 Compose 与真实 Caddyfile，停止临时 HTTP profile，以 `--build` 启动 HTTPS profile，然后验收本机 `/healthz` 和公网路径。Caddyfile 使用 `{$DOMAIN}`，脚本不会改写受 Git 跟踪的 Caddyfile。运行报告写入权限受限且被忽略的 `reports/public-deploy-*.md`；根目录 `PUBLIC_DEPLOY_REPORT.md` 仅为脱敏模板。本任务不执行真实生产服务器部署。
 
 ## 公网只读 Dashboard
 
