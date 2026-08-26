@@ -45,11 +45,19 @@ docker compose --profile https run --rm --no-deps \
     --entrypoint caddy caddy \
     validate --config /etc/caddy/Caddyfile --adapter caddyfile
 
-if docker compose --profile public-test ps --all --services | grep -qx 'public_test'; then
+if ! public_services="$(docker compose --profile public-test ps --all --services)"; then
+    echo 'Failed to inspect public_test containers' >&2
+    exit 1
+fi
+if grep -qx 'public_test' <<<"$public_services"; then
     docker compose --profile public-test stop public_test
     docker compose --profile public-test rm -f public_test
 fi
-if docker compose --profile public-test ps --status running --services | grep -qx 'public_test'; then
+if ! running_services="$(docker compose --profile public-test ps --status running --services)"; then
+    echo 'Failed to verify public_test shutdown' >&2
+    exit 1
+fi
+if grep -qx 'public_test' <<<"$running_services"; then
     echo 'public_test is still running' >&2
     exit 1
 fi

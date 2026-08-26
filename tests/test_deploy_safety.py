@@ -23,6 +23,57 @@ def _bash_command():
     return shutil.which("bash")
 
 
+def _run_deploy_with_mocked_docker(docker_logic: str):
+    bash = _bash_command()
+    if not bash:
+        raise unittest.SkipTest("bash is unavailable")
+    with tempfile.TemporaryDirectory() as directory:
+        root = pathlib.Path(directory)
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        (root / "caddy").mkdir()
+        (root / "reports").mkdir()
+        shutil.copy2(ROOT / "deploy_public.sh", root / "deploy_public.sh")
+        shutil.copy2(ROOT / "caddy" / "Caddyfile", root / "caddy" / "Caddyfile")
+        (root / ".env.example").write_text("SECRET_KEY=placeholder\n", encoding="utf-8")
+        docker_log = root / "docker.log"
+        (bin_dir / "docker").write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\\n' \"$*\" >> '{docker_log.as_posix()}'\n"
+            + docker_logic
+            + "\nexit 0\n",
+            encoding="utf-8",
+        )
+        for name in ("python3", "python"):
+            (bin_dir / name).write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        (bin_dir / "curl").write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+        for executable in bin_dir.iterdir():
+            executable.chmod(0o755)
+        env = os.environ.copy()
+        env["PATH"] = os.pathsep.join((str(bin_dir), os.environ.get("PATH", "")))
+        env.update(
+            {
+                "DUCKDNS_TOKEN": "redacted",
+                "DUCKDNS_SUBDOMAIN": "example",
+                "SERVER_IP": "redacted",
+                "PYTHON_BIN": "python3",
+                "PYTHON_FALLBACK": "python",
+            }
+        )
+        before_reports = set((root / "reports").iterdir())
+        result = subprocess.run(
+            [bash, str(root / "deploy_public.sh")],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        after_reports = set((root / "reports").iterdir())
+        return result, docker_log.read_text(encoding="utf-8"), before_reports == after_reports
+
+
 class DeploySafetyTests(unittest.TestCase):
     def test_port_boundary_is_exact(self):
         compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
@@ -44,6 +95,33 @@ class DeploySafetyTests(unittest.TestCase):
         self.assertIn(".env.example", script)
         self.assertIn("install -m 600", script)
         self.assertIn("trap cleanup EXIT", script)
+
+    def test_deploy_fails_closed_when_initial_public_status_query_fails(self):
+        result, docker_log, reports_unchanged = _run_deploy_with_mocked_docker(
+            "case \"$*\" in\n"
+            "  *\"ps --all --services\"*) exit 17 ;;\n"
+            "esac"
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Failed to inspect public_test containers", result.stderr)
+        self.assertNotIn("up -d --build gateway caddy", docker_log)
+        self.assertNotIn("PUBLIC_DEPLOYMENT_OK", result.stdout)
+        self.assertTrue(reports_unchanged)
+
+    def test_deploy_fails_closed_when_shutdown_verification_query_fails(self):
+        result, docker_log, reports_unchanged = _run_deploy_with_mocked_docker(
+            "case \"$*\" in\n"
+            "  *\"ps --all --services\"*) printf 'public_test\\n'; exit 0 ;;\n"
+            "  *\"ps --status running --services\"*) exit 18 ;;\n"
+            "esac"
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Failed to verify public_test shutdown", result.stderr)
+        self.assertIn("stop public_test", docker_log)
+        self.assertIn("rm -f public_test", docker_log)
+        self.assertNotIn("up -d --build gateway caddy", docker_log)
+        self.assertNotIn("PUBLIC_DEPLOYMENT_OK", result.stdout)
+        self.assertTrue(reports_unchanged)
 
     def test_public_template_is_redacted(self):
         template = (ROOT / "PUBLIC_DEPLOY_REPORT.md").read_text(encoding="utf-8")

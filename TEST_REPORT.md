@@ -8,7 +8,7 @@
 - `git diff --check`：通过。
 - `bash -n start.sh`、`deploy_public.sh`、`scripts/network_smoke_test.sh`、`scripts/deployment_config_smoke_test.sh`：通过。
 - `python -m compileall -q app scripts`：通过。
-- `python -m unittest discover -s tests -v`：35 tests passed。
+- `python -m unittest discover -s tests -v`：37 tests passed。
 - 基础 `docker compose config`：通过。
 - `DOMAIN=example.invalid docker compose --profile https config`：通过。
 - 真实 Caddy 容器 `validate --config /etc/caddy/Caddyfile --adapter caddyfile`：通过。
@@ -18,6 +18,7 @@
 - 端口边界断言：通过，输出 `PORT_BOUNDARY_OK`。
 - 部署报告边界检查：通过，运行脚本包含 `--build`，不覆盖根目录报告，报告路径为被忽略的 `reports/`。
 - 临时入口清理：脚本仅在 Compose 实际列出 `public_test` 时执行 stop/rm；清理命令失败会立即终止，清理后仍运行则明确失败。
+- Compose 状态查询失败关闭：首次查询失败或清理后复查失败均返回非零；行为测试确认不会执行正式 `up --build`、不会输出成功标记、不会生成部署报告。
 - 部署安全细节：脚本开头 `umask 077`；本机健康检查使用 `mktemp`，不再使用可预测的 `/tmp` 文件名。
 - 敏感信息检查：通过；公开文件未发现真实 DuckDNS Token、API Key、OAuth、Cookie、凭据或服务器地址。
 
