@@ -11,8 +11,14 @@
 - 完整 `unittest`：23 tests passed
 - 基础 `docker compose config`：通过
 - 外部网络 override `docker compose -f docker-compose.yml -f docker-compose.upstream-network.yml config`：通过
-- `scripts/network_smoke_test.sh`：本机未执行；当前 Windows 环境没有可用的 WSL `/bin/bash`，Docker Desktop Linux daemon 也未运行
+- `scripts/network_smoke_test.sh`：通过；真实构建 `python:3.12-slim`、启动 Gateway、健康检查、容器内 `host.docker.internal` DNS 检查及 Caddy→Gateway Docker 网络检查均通过（输出 `NETWORK_SMOKE_OK`）
 - 本次返工未部署或重启生产服务器；服务器实际启动冒烟仍作为独立验收项
+
+本机环境补齐记录：
+
+- Docker Desktop：已安装并启动，Docker Server 29.7.2
+- Git Bash：已安装，使用明确路径执行脚本
+- Docker Hub 出口：已恢复；Docker Desktop 使用 `http://host.docker.internal:8118`，宿主机 Privoxy 绑定 `192.168.155.104:8118` 并转发至本机 SOCKS5 `127.0.0.1:10808`
 
 本地测试：
 
@@ -23,6 +29,12 @@
 - 用户统计隔离、周汇总、历史上限：通过
 
 结果：23 tests passed。
+
+本次真实 Docker 冒烟资源记录：
+
+- Docker Server：29.7.2
+- Gateway：healthy，`/healthz` HTTP 200，`upstream_configured=false`（本次只验证运行时网络，不配置真实上游）
+- Gateway 内存：约 41.23 MiB；CPU：约 0.20%（`docker stats --no-stream`）
 
 生产加固本地验证：
 
