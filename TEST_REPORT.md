@@ -11,8 +11,14 @@
 - 完整 `unittest`：23 tests passed
 - 基础 `docker compose config`：通过
 - 外部网络 override `docker compose -f docker-compose.yml -f docker-compose.upstream-network.yml config`：通过
-- `scripts/network_smoke_test.sh`：本机未执行；当前 Windows 环境没有可用的 WSL `/bin/bash`，Docker Desktop Linux daemon 也未运行
+- `scripts/network_smoke_test.sh`：已启动 Docker Desktop 并真实执行；构建阶段因 Docker Hub `python:3.12-slim` 拉取返回 EOF 失败，未进入应用冒烟步骤
 - 本次返工未部署或重启生产服务器；服务器实际启动冒烟仍作为独立验收项
+
+本机环境补齐记录：
+
+- Docker Desktop：已安装并启动，Docker Server 29.7.2
+- Git Bash：已安装，使用明确路径执行脚本
+- Docker Hub TLS/镜像拉取：失败（`registry-1.docker.io` TLS/EOF），需要恢复 Docker Hub 出口或配置 Docker Desktop 代理后重试
 
 本地测试：
 
