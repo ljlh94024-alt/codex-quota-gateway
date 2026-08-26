@@ -14,6 +14,7 @@ class NetworkConfigTests(unittest.TestCase):
         cls.override = yaml.safe_load((ROOT / "docker-compose.upstream-network.yml").read_text(encoding="utf-8"))
         cls.env = (ROOT / ".env.example").read_text(encoding="utf-8")
         cls.caddy = (ROOT / "caddy" / "Caddyfile").read_text(encoding="utf-8")
+        cls.start = (ROOT / "start.sh").read_text(encoding="utf-8")
 
     def test_container_bind_and_host_publish(self):
         self.assertIn("BIND_HOST=0.0.0.0", self.env)
@@ -53,6 +54,12 @@ class NetworkConfigTests(unittest.TestCase):
 
     def test_no_caddy_generator_remains(self):
         self.assertFalse((ROOT / "scripts" / "generate_caddy.py").exists())
+
+    def test_start_script_persists_generated_env(self):
+        self.assertIn("cp .env.example .env", self.start)
+        self.assertIn("chmod 600 .env", self.start)
+        self.assertNotIn("created_env", self.start)
+        self.assertNotIn("rm -f .env", self.start)
 
 
 if __name__ == "__main__":

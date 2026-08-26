@@ -6,9 +6,10 @@ cd "$ROOT_DIR"
 command -v docker >/dev/null 2>&1 || { echo 'docker is required' >&2; exit 1; }
 docker compose version >/dev/null 2>&1 || { echo 'Docker Compose v2 is required' >&2; exit 1; }
 
-created_env=0
-if [[ ! -f .env ]]; then cp .env.example .env; created_env=1; fi
-trap 'if [[ "$created_env" == 1 ]]; then rm -f .env; fi' EXIT
+if [[ ! -f .env ]]; then
+    cp .env.example .env
+    chmod 600 .env
+fi
 python3 - <<'PY'
 from pathlib import Path
 import secrets
