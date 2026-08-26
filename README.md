@@ -152,7 +152,7 @@ docker compose --profile https up -d
 
 Caddy 只发布宿主机 80/443，直接读取 `.env` 中的 `DOMAIN`，自动申请/续期证书，并将 HTTP 重定向到 HTTPS；不会改写受 Git 跟踪的 Caddyfile。没有真实域名和 DNS 指向时不要启用 `https` profile。
 
-正式 DuckDNS 部署使用 `deploy_public.sh`。脚本会先校验本机 Gateway `/healthz`、Compose 配置和真实 Caddyfile，再以 `--build` 重建并启动 `gateway`、`caddy`；成功后的脱敏报告写入被 `.gitignore` 忽略的 `reports/`（根目录 `PUBLIC_DEPLOY_REPORT.md` 只是模板）。本任务不执行真实生产服务器部署。
+正式 DuckDNS 部署使用 `deploy_public.sh`。脚本会先校验 Compose 配置和真实 Caddyfile，随后以 `--build` 重建并启动 `gateway`、`caddy`，再验收本机 Gateway `/healthz` 与公网路径；成功后的脱敏报告写入被 `.gitignore` 忽略的 `reports/`（根目录 `PUBLIC_DEPLOY_REPORT.md` 只是模板）。本任务不执行真实生产服务器部署。
 
 管理员浏览器入口为 `/admin/login`；`/admin/dashboard` 需要有效 Session。脚本恢复流程：
 

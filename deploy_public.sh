@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+umask 077
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
@@ -44,21 +45,28 @@ docker compose --profile https run --rm --no-deps \
     --entrypoint caddy caddy \
     validate --config /etc/caddy/Caddyfile --adapter caddyfile
 
-docker compose --profile public-test stop public_test >/dev/null 2>&1 || true
-docker compose --profile public-test rm -f public_test >/dev/null 2>&1 || true
+if docker compose --profile public-test ps --all --services | grep -qx 'public_test'; then
+    docker compose --profile public-test stop public_test
+    docker compose --profile public-test rm -f public_test
+fi
+if docker compose --profile public-test ps --status running --services | grep -qx 'public_test'; then
+    echo 'public_test is still running' >&2
+    exit 1
+fi
 docker compose --profile https up -d --build gateway caddy
 
 local_body=""
 local_code=""
+health_file="$(mktemp)"
+trap 'rm -f "$health_file"' EXIT
 for _ in $(seq 1 60); do
-    local_code="$(curl -sS -o "/tmp/codex-gateway-health.$$" -w '%{http_code}' --max-time 5 http://127.0.0.1:8080/healthz || true)"
-    local_body="$(cat "/tmp/codex-gateway-health.$$" 2>/dev/null || true)"
+    local_code="$(curl -sS -o "$health_file" -w '%{http_code}' --max-time 5 http://127.0.0.1:8080/healthz || true)"
+    local_body="$(cat "$health_file" 2>/dev/null || true)"
     if [[ "$local_code" == "200" ]] && grep -q '"status":"ok"' <<<"$local_body"; then
         break
     fi
     sleep 1
 done
-rm -f "/tmp/codex-gateway-health.$$"
 if [[ "$local_code" != "200" ]] || ! grep -q '"status":"ok"' <<<"$local_body"; then
     echo 'Gateway local health check failed' >&2
     docker compose logs --tail=120 gateway >&2 || true

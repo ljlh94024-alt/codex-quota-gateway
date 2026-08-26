@@ -1,6 +1,8 @@
 import os
 import pathlib
+import shutil
 import stat
+import subprocess
 import tempfile
 import unittest
 
@@ -10,6 +12,15 @@ from scripts.prepare_runtime_env import prepare_env
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def _bash_command():
+    if os.name == "nt":
+        for candidate in (r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files\Git\usr\bin\bash.exe"):
+            if pathlib.Path(candidate).exists():
+                return candidate
+        return None
+    return shutil.which("bash")
 
 
 class DeploySafetyTests(unittest.TestCase):
@@ -23,12 +34,25 @@ class DeploySafetyTests(unittest.TestCase):
         self.assertIn("up -d --build gateway caddy", script)
         self.assertIn("reports/public-deploy-", script)
         self.assertNotIn("cat > PUBLIC_DEPLOY_REPORT.md", script)
+        self.assertIn("umask 077", script)
+        self.assertIn("health_file=\"$(mktemp)\"", script)
+        self.assertIn("public_test is still running", script)
+        self.assertNotIn("stop public_test >/dev/null 2>&1 || true", script)
+
+    def test_config_smoke_is_self_contained(self):
+        script = (ROOT / "scripts" / "deployment_config_smoke_test.sh").read_text(encoding="utf-8")
+        self.assertIn(".env.example", script)
+        self.assertIn("install -m 600", script)
+        self.assertIn("trap cleanup EXIT", script)
 
     def test_public_template_is_redacted(self):
         template = (ROOT / "PUBLIC_DEPLOY_REPORT.md").read_text(encoding="utf-8")
         self.assertNotRegex(template, r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+        self.assertNotRegex(template, r"(?i)(?:[0-9a-f]{1,4}:){2,}[0-9a-f:]+")
+        self.assertNotRegex(template, r"(?i)(?:[a-z0-9-]+\.)+(?:com|net|org|io)\b")
         self.assertNotRegex(template, r"DUCKDNS_TOKEN=.+")
         self.assertNotRegex(template, r"(?:sk-|Bearer\s+)[A-Za-z0-9._-]{12,}")
+        self.assertNotRegex(template, r"(?i)(?:oauth|cookie|api[_-]?key|access[_-]?token)")
         self.assertIn("reports/", template)
 
     def test_env_secret_cases_are_idempotent_and_restrictive(self):
@@ -77,6 +101,55 @@ class DeploySafetyTests(unittest.TestCase):
         self.assertIn('"$python_bin" -c \'import sys\'', script)
         self.assertIn('"$python_fallback" -c \'import sys\'', script)
         self.assertIn("No usable Python interpreter found", script)
+
+    def test_start_script_really_uses_python_fallback(self):
+        bash = _bash_command()
+        if not bash:
+            self.skipTest("bash is unavailable")
+        with tempfile.TemporaryDirectory() as directory:
+            bin_dir = pathlib.Path(directory) / "bin"
+            bin_dir.mkdir()
+            log = pathlib.Path(directory) / "docker.log"
+            real_python = "python.exe" if os.name == "nt" else pathlib.Path(os.sys.executable).as_posix()
+            (bin_dir / "python3").write_text("#!/bin/sh\nexit 42\n", encoding="utf-8")
+            (bin_dir / "python").write_text(f"#!/bin/sh\nexec '{real_python}' \"$@\"\n", encoding="utf-8")
+            (bin_dir / "docker").write_text(
+                f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log.as_posix()}'\nexit 0\n", encoding="utf-8"
+            )
+            (bin_dir / "curl").write_text("#!/bin/sh\nprintf '{\"status\":\"ok\"}\\n'\n", encoding="utf-8")
+            for executable in bin_dir.iterdir():
+                executable.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = os.pathsep.join((str(bin_dir), os.environ.get("PATH", "")))
+            env["PYTHON_BIN"] = "python3"
+            env["PYTHON_FALLBACK"] = "python"
+            result = subprocess.run([bash, str(ROOT / "start.sh")], cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("up -d --build gateway", log.read_text(encoding="utf-8"))
+
+    def test_start_script_stops_before_docker_when_both_python_fail(self):
+        bash = _bash_command()
+        if not bash:
+            self.skipTest("bash is unavailable")
+        with tempfile.TemporaryDirectory() as directory:
+            bin_dir = pathlib.Path(directory) / "bin"
+            bin_dir.mkdir()
+            log = pathlib.Path(directory) / "docker.log"
+            for name in ("python3", "python"):
+                (bin_dir / name).write_text("#!/bin/sh\nexit 42\n", encoding="utf-8")
+            (bin_dir / "docker").write_text(
+                f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log.as_posix()}'\nexit 0\n", encoding="utf-8"
+            )
+            for executable in bin_dir.iterdir():
+                executable.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = os.pathsep.join((str(bin_dir), os.environ.get("PATH", "")))
+            env["PYTHON_BIN"] = "python3"
+            env["PYTHON_FALLBACK"] = "python"
+            result = subprocess.run([bash, str(ROOT / "start.sh")], cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("No usable Python interpreter found", result.stderr)
+            self.assertNotIn("compose up", log.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
