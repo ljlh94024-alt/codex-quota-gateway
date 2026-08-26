@@ -11,22 +11,16 @@ if [[ ! -f .env ]]; then
     chmod 600 .env
 fi
 python_bin="${PYTHON_BIN:-python3}"
-if ! command -v "$python_bin" >/dev/null 2>&1 || ! "$python_bin" -c 'import sys' >/dev/null 2>&1; then
-    python_bin="${PYTHON_FALLBACK:-python}"
+python_fallback="${PYTHON_FALLBACK:-python}"
+if command -v "$python_bin" >/dev/null 2>&1 && "$python_bin" -c 'import sys' >/dev/null 2>&1; then
+    :
+elif command -v "$python_fallback" >/dev/null 2>&1 && "$python_fallback" -c 'import sys' >/dev/null 2>&1; then
+    python_bin="$python_fallback"
+else
+    echo 'No usable Python interpreter found; checked PYTHON_BIN and PYTHON_FALLBACK.' >&2
+    exit 1
 fi
-"$python_bin" - <<'PY'
-from pathlib import Path
-import secrets
-p=Path('.env'); lines=p.read_text(encoding='utf-8').splitlines(); out=[]; seen=set()
-for line in lines:
-    if line and not line.lstrip().startswith('#') and '=' in line:
-        key,val=line.split('=',1); seen.add(key)
-        if key=='BIND_HOST': line='BIND_HOST=0.0.0.0'
-        elif key=='SECRET_KEY' and val in {'','replace-with-32-byte-random-secret'}: line='SECRET_KEY='+secrets.token_urlsafe(48)
-    out.append(line)
-if 'BIND_HOST' not in seen: out.append('BIND_HOST=0.0.0.0')
-p.write_text('\n'.join(out)+'\n',encoding='utf-8')
-PY
+"$python_bin" scripts/prepare_runtime_env.py --env-file .env
 docker compose config >/dev/null
 docker compose up -d --build gateway
 for _ in $(seq 1 60); do

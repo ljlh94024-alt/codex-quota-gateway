@@ -21,6 +21,12 @@ class NetworkConfigTests(unittest.TestCase):
         self.assertEqual(self.compose["services"]["gateway"]["ports"], ["127.0.0.1:8080:8080"])
         self.assertEqual(self.compose["services"]["gateway"]["environment"]["BIND_HOST"], "0.0.0.0")
 
+    def test_public_ports_are_exactly_https_only(self):
+        self.assertEqual(self.compose["services"]["caddy"]["ports"], ["80:80", "443:443"])
+
+    def test_public_test_profile_is_explicit(self):
+        self.assertEqual(self.compose["services"]["public_test"]["profiles"], ["public-test"])
+
     def test_base_network_is_compose_managed(self):
         networks = self.compose["networks"]
         self.assertIn("gateway-net", networks)
