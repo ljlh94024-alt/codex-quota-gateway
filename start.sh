@@ -10,7 +10,11 @@ if [[ ! -f .env ]]; then
     cp .env.example .env
     chmod 600 .env
 fi
-python3 - <<'PY'
+python_bin="${PYTHON_BIN:-python3}"
+if ! command -v "$python_bin" >/dev/null 2>&1 || ! "$python_bin" -c 'import sys' >/dev/null 2>&1; then
+    python_bin="${PYTHON_FALLBACK:-python}"
+fi
+"$python_bin" - <<'PY'
 from pathlib import Path
 import secrets
 p=Path('.env'); lines=p.read_text(encoding='utf-8').splitlines(); out=[]; seen=set()

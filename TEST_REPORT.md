@@ -12,6 +12,7 @@
 - 基础 `docker compose config`：通过
 - 外部网络 override `docker compose -f docker-compose.yml -f docker-compose.upstream-network.yml config`：通过
 - `scripts/network_smoke_test.sh`：通过；真实构建 `python:3.12-slim`、启动 Gateway、健康检查、容器内 `host.docker.internal` DNS 检查及 Caddy→Gateway Docker 网络检查均通过（输出 `NETWORK_SMOKE_OK`）
+- `start.sh`：通过；保留新建 `.env`，并兼容 Windows Git Bash 中不可用的 `python3` 占位程序，成功启动 Gateway 并输出 `NETWORK_SMOKE_OK`
 - 本次返工未部署或重启生产服务器；服务器实际启动冒烟仍作为独立验收项
 
 本机环境补齐记录：
